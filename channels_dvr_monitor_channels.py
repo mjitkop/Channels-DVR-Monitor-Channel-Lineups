@@ -13,6 +13,7 @@ https://community.getchannels.com/t/python-script-to-be-notified-of-channel-chan
 
 Version History:
 - 2023.06.01.2301: Initial public release.
+- 2023.06.04.2229: Improved: don't use MIME to format messages (nicer SMS)
 """
 
 ################################################################################
@@ -24,8 +25,6 @@ Version History:
 import argparse, json, requests, smtplib, sys, time
 
 from datetime import datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 ################################################################################
 #                                                                              #
@@ -42,8 +41,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-TEXT_SUBJECT         = 'Channels DVR'
-VERSION              = '2023.06.01.2301'
+VERSION              = '2023.06.04.2229'
 
 ################################################################################
 #                                                                              #
@@ -133,8 +131,32 @@ def create_sources(devices):
     '''
     return [ChannelsDVRSource(device) for device in devices]
 
-def format_message_for_email(server_version, sources, channel_count_message):
-    '''Generate a string that is easy to read in an email.'''
+def format_message_for_email(server_version, sources):
+    '''
+    Generate a string that is easy to read in an email.
+    It will start with the version of the Channels DVR server.
+    Then it will list the removed channels and added channels for each source
+    as follows:
+    
+        Source name:
+        - name of removed channel 1 (channel number)
+        - name of removed channel 2 (channel number)
+        - ...
+        - name of removed channel N (channel number)
+        + name of added channel 1 (channel number)
+        + name of added channel 2 (channel number)
+        + ...
+        + name of added channel N (channel number)
+        
+    Bonus: when pasting this message as is in the Channels DVR forum and choosing
+    the formatted text option, the removed channels are automatically highlighted 
+    in red, and the added channels in green.
+    
+    For each source that was modified, the new channel count will also be shown
+    with the channel count difference in parenthesis compared to the last count.
+    Example:
+        "Pluto TV channel count: 358 (-2)"    
+    '''
     message = f'Channels DVR version: {server_version}\n'
     
     for source in sources:
@@ -166,34 +188,48 @@ def format_message_for_email(server_version, sources, channel_count_message):
     
     return message
 
-def format_message_for_sms(added_channels, removed_channels):
-    '''Generate a short message that is suitable for a text/SMS'''
-    message = ""
-    
-    if added_channels:
-        message += "\n*New* "
-        message = add_number_of_channels_to_sms_message(message, added_channels)
-            
-    if removed_channels:
-        message += "\n*Removed* "
-        message = add_number_of_channels_to_sms_message(message, removed_channels)
-            
-    return message
-    
-def add_number_of_channels_to_sms_message(message, channel_list):
+def format_message_for_sms(sources):
     '''
-    Parse the channel list and add source name + number of channels to the message.
-    Return the message when done.
+    Generate a short message that is suitable for a text/SMS.
+    It will list the removed channel numbers and added channel numbers 
+    for each source as follows:
+    
+        Source name:
+        - number of removed channel 1, ..., number of removed channel N
+        + number of added channel 1, ..., number of added channel N
     '''
-    for source_name, channels in channel_list.items():
-        source_name = source_name.split(' ')[0] # Only keep the first word
-        message += f'{source_name}: '
-        number_channels = len(channels)
+    message = "Channels DVR lineup changes:\n"
+    
+    for source in sources:
+        if source.added_channels or source.removed_channels:
+            message += '\n'
+            message += f'{source.name}:'
         
-        if number_channels == 1:
-            message += '1 channel. '
-        else:
-            message += f'{number_channels} channels. '
+        if source.removed_channels:
+            message += '\n'
+            message += '- '
+            
+            sorted_numbers = list(source.removed_channels.values())
+            sorted_numbers.sort()
+        
+            for number in sorted_numbers:
+                if number == sorted_numbers[0]:
+                    message += f'{number}'
+                else:
+                    message += f', {number}'
+            
+        if source.added_channels:
+            message += '\n'
+            message += '+ '
+            
+            sorted_numbers = list(source.added_channels.values())
+            sorted_numbers.sort()
+            
+            for number in sorted_numbers:
+                if number == sorted_numbers[0]:
+                    message += f'{number}'
+                else:
+                    message += f', {number}'
             
     return message
 
@@ -206,19 +242,6 @@ def get_channels_dvr_version(ip_address, port_number):
 def get_email_provider(sender_address):
     '''Given the email address as user@provider.com, return the provider.'''
     return sender_address.lower().split('@')[1].split('.')[0]
-    
-def get_message_type(destination):
-    '''
-    Based on the given destination address, determine whether the message
-    to be sent is an email or a text message.
-    '''
-    provider = get_email_provider(destination)
-    
-    message_type = 'a text'
-    if provider in SMTP_SERVER_ADDRESS.keys():
-        message_type = 'an email'
-        
-    return message_type
     
 def create_message_with_new_channel_counts(sources, modified_sources):
     '''
@@ -237,23 +260,36 @@ def create_message_with_new_channel_counts(sources, modified_sources):
 
     return message
 
-def send_message(sender_address, password, subject, destination, message):
+def send_email(sender_address, password, recipient_address, message_body):
+    '''
+    Finish setting up the message for the smtplib library and use smtplib
+    to send the email.
+    '''
+    msg = f'From: {sender_address}\n'   + \
+          f'To: {recipient_address}\n'  + \
+          f'Subject: {EMAIL_SUBJECT}\n' + \
+          '\n'                          + \
+          message_body
+
+    print(f'Sending email to {recipient_address}...')
+    send_message(sender_address, password, recipient_address, msg)          
+
+def send_sms(sender_address, password, text_number, message_body):
+    '''
+    Finish setting up the message for the smtplib library and use smtplib
+    to send an email to the text number.
+    '''
+    msg = f'From: {sender_address}\n'   + \
+          '\n'                          + \
+          message_body
+
+    print(f'Sending text message to {text_number}...')
+    send_message(sender_address, password, text_number, msg)          
+
+def send_message(sender_address, password, destination, msg):
     '''Send a message from the given email account to the specified destination.'''
-    message_type = get_message_type(destination)
     provider = get_email_provider(sender_address)
-
-    print(f'Sending {message_type} to {destination}...')
-    
     smtp_server = SMTP_SERVER_ADDRESS[provider]
-    
-    # Create a multipart message
-    msg = MIMEMultipart()
-    msg['From'] = sender_address
-    msg['To'] = destination
-    msg['Subject'] = subject
-
-    # Attach the message to the MIMEMultipart object
-    msg.attach(MIMEText(message, 'plain'))
     
     try:
         # Create a secure SSL connection to the SMTP server
@@ -266,7 +302,7 @@ def send_message(sender_address, password, subject, destination, message):
         server.login(sender_address, password)
 
         # Send the email
-        server.sendmail(sender_address, destination, msg.as_string())
+        server.sendmail(sender_address, destination, msg)
 
         print('Message sent successfully!')
         print('')
@@ -418,12 +454,12 @@ if __name__ == "__main__":
         
         if sender_address and modified_sources:
             if recipient_address:
-                message = format_message_for_email(server_version, sources, channel_count_message)
-                send_message(sender_address, password, EMAIL_SUBJECT, recipient_address, message)
+                message = format_message_for_email(server_version, sources)
+                send_email(sender_address, password, recipient_address, message)
                 
             if text_number:
-                message = format_message_for_sms(added_channels, removed_channels)
-                send_message(sender_address, password, TEXT_SUBJECT, text_number, message)
+                message = format_message_for_sms(sources)
+                send_sms(sender_address, password, text_number, message)
         
         print('Next check      :', next_check_time.strftime("%Y-%m-%d %H:%M:%S"))
         print('')
