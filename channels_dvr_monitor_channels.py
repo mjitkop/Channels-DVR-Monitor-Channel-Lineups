@@ -14,6 +14,7 @@ https://community.getchannels.com/t/python-script-to-be-notified-of-channel-chan
 Version History:
 - 2023.06.01.2301: Initial public release.
 - 2023.06.04.2229: Improved: don't use MIME to format messages (nicer SMS)
+- 2023.06.08.1150: Improved: use MIME to convert to UTF-8 for emails only
 """
 
 ################################################################################
@@ -25,6 +26,7 @@ Version History:
 import argparse, json, requests, smtplib, sys, time
 
 from datetime import datetime, timedelta
+from email.mime.text import MIMEText
 
 ################################################################################
 #                                                                              #
@@ -41,7 +43,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '2023.06.04.2229'
+VERSION              = '2023.06.08.1150'
 
 ################################################################################
 #                                                                              #
@@ -265,11 +267,10 @@ def send_email(sender_address, password, recipient_address, message_body):
     Finish setting up the message for the smtplib library and use smtplib
     to send the email.
     '''
-    msg = f'From: {sender_address}\n'   + \
-          f'To: {recipient_address}\n'  + \
-          f'Subject: {EMAIL_SUBJECT}\n' + \
-          '\n'                          + \
-          message_body
+    msg = MIMEText(message_body, 'plain', 'utf-8')
+    msg['Subject'] = EMAIL_SUBJECT
+    msg['From']    = sender_address
+    msg['To']      = recipient_address
 
     print(f'Sending email to {recipient_address}...')
     send_message(sender_address, password, recipient_address, msg)          
@@ -302,7 +303,12 @@ def send_message(sender_address, password, destination, msg):
         server.login(sender_address, password)
 
         # Send the email
-        server.sendmail(sender_address, destination, msg)
+        if isinstance(msg, str):
+            # The message is a simple string for a text/SMS
+            server.sendmail(sender_address, destination, msg)
+        else:
+            # The message is a MIME object for an email
+            server.sendmail(sender_address, [destination], msg.as_string())
 
         print('Message sent successfully!')
         print('')
@@ -400,9 +406,6 @@ if __name__ == "__main__":
     if not sender_address:
         print('Visual monitoring only, no email or text will be sent.')
     else:
-        email_provider = get_email_provider(sender_address)
-        smtp_server_address = SMTP_SERVER_ADDRESS[email_provider]
-        
         if recipient_address:
             print(f'An email will be sent to {recipient_address} when changes are detected.')
         if text_number:
