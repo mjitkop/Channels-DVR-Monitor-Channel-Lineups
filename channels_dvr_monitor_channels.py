@@ -200,9 +200,7 @@ class ChannelsDVRSource:
 
                 channel_number = line.split(SEPARATOR_CHARACTER)[0]
                 channel_name   = line.split(SEPARATOR_CHARACTER)[1]
-                channel_id     = line.split(SEPARATOR_CHARACTER)[2]
 
-                channel_json['ID']          = channel_id
                 channel_json['GuideNumber'] = channel_number
                 channel_json['GuideName']   = channel_name
 
