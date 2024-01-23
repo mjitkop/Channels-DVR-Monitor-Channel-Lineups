@@ -21,6 +21,8 @@ Version History:
           [FIXED] Need to handle the case when a source is added while the script is NOT running
           [FIXED] Don't ignore duplicate channels
           [NEW] Option '-l', '--log': Log channel changes to a file
+- 2.1.0 : Show lineup changes in order of channel numbers.
+          Show channel changes in order of channel names.
 """
 
 ################################################################################
@@ -51,7 +53,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '2.0.0'
+VERSION              = '2.1.0'
 
 ################################################################################
 #                                                                              #
@@ -317,44 +319,36 @@ def create_detailed_message(server_version, sources):
                 removed_channels  = source.get_removed_channel_names()
                 new_channels      = source.get_new_channel_names()
 
+                sorted_names   = get_sorted_channel_names_from_channel_changes(removed_channels, new_channels)
+                sorted_numbers = get_sorted_channel_numbers_from_lineup_changes(deleted_channels, added_channels, modified_channels)
+
                 message += '\n'
                 channel_count_diff = source.get_channel_count_difference()
                 message += f'{source.name}: {len(source.current_lineup)} channels ({channel_count_diff})\n'
 
                 if removed_channels or new_channels:
                     message += '------ Lineup changes ------\n'
-                
-                if deleted_channels:
-                    sorted_numbers = sort_dictionary_keys(deleted_channels)
-                    for number in sorted_numbers:
+
+                for number in sorted_numbers:
+                    if number in list(deleted_channels.keys()):
                         channel_info = deleted_channels[number]
                         message += f'- {number} : {channel_info.name}\n'
-                    
-                if added_channels:
-                    sorted_numbers = sort_dictionary_keys(added_channels)
-                    for number in sorted_numbers:
+                    if number in list(added_channels.keys()):    
                         channel_info = added_channels[number]
                         message += f'+ {number} : {channel_info.name}\n'
-
-                if modified_channels:
-                    sorted_numbers = sort_dictionary_keys(modified_channels)
-                    for number in sorted_numbers:
+                    if number in list(modified_channels.keys()):
                         old_channel_info = modified_channels[number][0]
                         new_channel_info = modified_channels[number][1]
-                        message += f'! {number} : {old_channel_info.name} -> {new_channel_info.name}\n'
+                        message += f'! {number} : {new_channel_info.name} (was: {old_channel_info.name})\n'
                     
                 if removed_channels or new_channels:
                     message += '------ Channel changes ------\n'
                 
-                if removed_channels:
-                    sorted_names = sort_dictionary_keys(removed_channels)
-                    for name in sorted_names:
+                for name in sorted_names:
+                    if name in list(removed_channels.keys()):
                         channel_info = removed_channels[name]
                         message += f'- {name} ({channel_info.number})\n'
-                
-                if new_channels:
-                    sorted_names = sort_dictionary_keys(new_channels)
-                    for name in sorted_names:
+                    if name in list(new_channels.keys()):
                         channel_info = new_channels[name]
                         message += f'+ {name} ({channel_info.number})\n'
 
@@ -430,6 +424,29 @@ def get_channels_dvr_version(dvr_url):
 def get_email_provider(sender_address):
     '''Given the email address as user@provider.com, return the provider.'''
     return sender_address.lower().split('@')[1].split('.')[0]
+
+def get_sorted_channel_names_from_channel_changes(removed_channels, new_channels):
+    '''
+    Parse the given removed and new channels and return an ordered list of channel names.
+    '''
+    sorted_names = list(removed_channels.keys())
+    sorted_names.extend(list(new_channels.keys()))
+    sorted_names.sort()
+
+    return sorted_names
+
+def get_sorted_channel_numbers_from_lineup_changes(deleted_channels, added_channels, modified_channels):
+    '''
+    Parse all the channel numbers from the given lists of deleted, added, and modified channels.
+    Return a list of all these numbers in order.
+    '''
+    sorted_numbers = list(deleted_channels.keys())
+    sorted_numbers.extend(list(added_channels.keys()))
+    sorted_numbers.extend(list(modified_channels.keys()))
+
+    sorted_numbers.sort()
+
+    return sorted_numbers
 
 def get_sorted_unique_channel_names_from_lineup(lineup):
     '''
