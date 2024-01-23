@@ -20,6 +20,7 @@ Version History:
           [IMPROVED] Add error handling for situations where the DVR isn't found
           [FIXED] Need to handle the case when a source is added while the script is NOT running
           [FIXED] Don't ignore duplicate channels
+          [NEW] Option '-l', '--log': Log channel changes to a file
 """
 
 ################################################################################
