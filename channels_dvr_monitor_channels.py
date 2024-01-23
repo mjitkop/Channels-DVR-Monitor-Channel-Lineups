@@ -264,8 +264,7 @@ class ChannelsDVRSource:
             for channel_number in sorted_channel_numbers:
                 channel_info = self.current_lineup[channel_number]
                 channel_name = channel_info.name
-                channel_id   = channel_info.id
-                line_to_write = f'{channel_number}{SEPARATOR_CHARACTER}{channel_name}{SEPARATOR_CHARACTER}{channel_id}\n'
+                line_to_write = f'{channel_number}{SEPARATOR_CHARACTER}{channel_name}\n'
                 txt_file.write(line_to_write)
 
 ################################################################################
@@ -331,20 +330,20 @@ def create_detailed_message(server_version, sources):
                     sorted_numbers = sort_dictionary_keys(deleted_channels)
                     for number in sorted_numbers:
                         channel_info = deleted_channels[number]
-                        message += f'- {number} : {channel_info.name} ({channel_info.id})\n'
+                        message += f'- {number} : {channel_info.name}\n'
                     
                 if added_channels:
                     sorted_numbers = sort_dictionary_keys(added_channels)
                     for number in sorted_numbers:
                         channel_info = added_channels[number]
-                        message += f'+ {number} : {channel_info.name} ({channel_info.id})\n'
+                        message += f'+ {number} : {channel_info.name}\n'
 
                 if modified_channels:
                     sorted_numbers = sort_dictionary_keys(modified_channels)
                     for number in sorted_numbers:
                         old_channel_info = modified_channels[number][0]
                         new_channel_info = modified_channels[number][1]
-                        message += f'! {number} : {old_channel_info.name} ({old_channel_info.id}) -> {new_channel_info.name} ({new_channel_info.id})\n'
+                        message += f'! {number} : {old_channel_info.name} -> {new_channel_info.name}\n'
                     
                 if removed_channels or new_channels:
                     message += '------ Channel changes ------\n'
@@ -353,13 +352,13 @@ def create_detailed_message(server_version, sources):
                     sorted_names = sort_dictionary_keys(removed_channels)
                     for name in sorted_names:
                         channel_info = removed_channels[name]
-                        message += f'- {name} ({channel_info.id}) [{channel_info.number}]\n'
+                        message += f'- {name} ({channel_info.number})\n'
                 
                 if new_channels:
                     sorted_names = sort_dictionary_keys(new_channels)
                     for name in sorted_names:
                         channel_info = new_channels[name]
-                        message += f'+ {name} ({channel_info.id}) [{channel_info.number}]\n'
+                        message += f'+ {name} ({channel_info.number})\n'
 
     return message
     
