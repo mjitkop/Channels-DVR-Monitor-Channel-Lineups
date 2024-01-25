@@ -21,8 +21,10 @@ Version History:
           [FIXED] Need to handle the case when a source is added while the script is NOT running
           [FIXED] Don't ignore duplicate channels
           [NEW] Option '-l', '--log': Log channel changes to a file
-- 2.1.0 : Show lineup changes in order of channel numbers.
-          Show channel changes in order of channel names.
+- 2.1.0 : [CHANGED] Show lineup changes in order of channel numbers.
+          [CHANGED] Show channel changes in order of channel names.
+- 2.2.0 : [IMPROVED] Added "Channels DVR lineup changes:" as first line in SMS message
+          [NEW] Show duplicated channels in each modified source
 """
 
 ################################################################################
@@ -135,6 +137,21 @@ class ChannelsDVRSource:
         
         return current_channels
         
+    def get_current_lineup_indexed_by_channel_names(self):
+        '''
+        Parse the current lineup that is indexed by channel numbers and create a new
+        dictionary that is indexed by the channel names.
+        '''
+        lineup_by_channel_names = {}
+
+        for _, channel_info in self.current_lineup.items():
+            name = channel_info.name
+            existing_list = lineup_by_channel_names.get(name, [])
+            existing_list.append(channel_info)
+            lineup_by_channel_names[name] = existing_list
+
+        return lineup_by_channel_names
+
     def get_deleted_channel_numbers(self):
         '''
         Compare the previous and current channel lineups and return the 
@@ -151,6 +168,18 @@ class ChannelsDVRSource:
 
         return deleted_channels
     
+    def get_duplicate_channels(self):
+        '''
+        Return a list of channels whose names appear on more than one channel number.
+        '''
+        duplicate_channels = {}
+
+        for name, channel_info_list in self.get_current_lineup_indexed_by_channel_names().items():
+            if len(channel_info_list) > 1:
+                duplicate_channels[name] = channel_info_list
+
+        return duplicate_channels 
+
     def get_modified_channels(self):
         '''
         Compare the channel names at the same channel numbers between the current channel lineup and the previous one.
@@ -278,20 +307,18 @@ def create_detailed_message(server_version, sources):
     Generate a string that is easy to read in an email.
     It will start with the version of the Channels DVR server.
     Then it will list the removed channels, added channels, and modified
-    channels for each source as follows:
+    channels for each source in order of the channel numbers as follows:
     
         Source name:
-        - channel number : name of removed channel 1
-        - channel number : name of removed channel 2
-        - ...
-        - channel number : name of removed channel N
-        + channel number : name of added channel 1
-        + channel number : name of added channel 2
+        - channel number 1 : name of removed channel 1
+        ! channel number 2 : new channel name (was old channel name)
+        - channel number 3 : name of removed channel 3
+          ...
+        + channel number 4 : name of added channel 4
+        + channel number 5 : name of added channel 5
+        ! channel number 6 : new channel name (was old channel name)
         + ...
-        + channel number : name of added channel N
-        ! channel number : old channel name -> new channel name
-        ! ...
-        ! channel number : old channel name -> new channel name
+        + channel number N : name of added channel N
         
     Bonus: when pasting this message as is in the Channels DVR forum and choosing
     the formatted text option, the removed channels are automatically highlighted 
@@ -313,11 +340,12 @@ def create_detailed_message(server_version, sources):
                 message += f'See file {source.name}.txt for the full lineup.\n'
         else:
             if source.has_lineup_changes():
-                deleted_channels  = source.get_deleted_channel_numbers()
-                added_channels    = source.get_added_channel_numbers()
-                modified_channels = source.get_modified_channels()
-                removed_channels  = source.get_removed_channel_names()
-                new_channels      = source.get_new_channel_names()
+                deleted_channels    = source.get_deleted_channel_numbers()
+                added_channels      = source.get_added_channel_numbers()
+                modified_channels   = source.get_modified_channels()
+                removed_channels    = source.get_removed_channel_names()
+                new_channels        = source.get_new_channel_names()
+                duplicated_channels = source.get_duplicate_channels()
 
                 sorted_names   = get_sorted_channel_names_from_channel_changes(removed_channels, new_channels)
                 sorted_numbers = get_sorted_channel_numbers_from_lineup_changes(deleted_channels, added_channels, modified_channels)
@@ -326,7 +354,7 @@ def create_detailed_message(server_version, sources):
                 channel_count_diff = source.get_channel_count_difference()
                 message += f'{source.name}: {len(source.current_lineup)} channels ({channel_count_diff})\n'
 
-                if removed_channels or new_channels:
+                if removed_channels or new_channels or duplicated_channels:
                     message += '------ Lineup changes ------\n'
 
                 for number in sorted_numbers:
@@ -339,7 +367,7 @@ def create_detailed_message(server_version, sources):
                     if number in list(modified_channels.keys()):
                         old_channel_info = modified_channels[number][0]
                         new_channel_info = modified_channels[number][1]
-                        message += f'! {number} : {new_channel_info.name} (was: {old_channel_info.name})\n'
+                        message += f'! {number} : {new_channel_info.name} (was {old_channel_info.name})\n'
                     
                 if removed_channels or new_channels:
                     message += '------ Channel changes ------\n'
@@ -351,6 +379,14 @@ def create_detailed_message(server_version, sources):
                     if name in list(new_channels.keys()):
                         channel_info = new_channels[name]
                         message += f'+ {name} ({channel_info.number})\n'
+
+                if duplicated_channels:
+                    message += '---- Duplicated channels ----\n'
+                    sorted_names = sorted(list(duplicated_channels.keys()))
+                    for name in sorted_names:
+                        channel_info_list = duplicated_channels[name]
+                        sorted_numbers = sorted([channel_info.number for channel_info in channel_info_list])
+                        message += f'{name}: {sorted_numbers}\n'
 
     return message
     
@@ -368,14 +404,15 @@ def create_sources(dvr_url):
 def create_summary_message(sources):
     '''
     Generate a short message that is suitable for a text/SMS.
-    It will list the removed channel numbers and added channel numbers 
-    for each source as follows:
-    
-        Source name: number of channels (channel count difference)
+    It will start with this line: "Channels DVR lineup changes:".
+    Then it will list the channel count difference for each modified source.
         
-        Example: Pluto TV: 373 (+3)
+    Example: 
+    Channels DVR lineup changes:
+    PLEX Live TV: 528 (-2)
+    Pluto TV: 373 (+3)
     '''
-    message = ""
+    message = "Channels DVR lineup changes:\n"
     
     for source in sources:
         if source.has_lineup_changes():
@@ -462,9 +499,7 @@ def get_sorted_unique_channel_names_from_lineup(lineup):
         if not name in names:
             names.append(name)
 
-    names.sort()
-
-    return names
+    return sorted(names)
 
 def notify_server_offline(dvr_url, sender_address, password, recipient_address, text_number):
     '''If email address and/or text number are/is provided, notify the user that the server is offline.'''
@@ -524,10 +559,7 @@ def send_message(sender_address, password, destination, msg):
 
 def sort_dictionary_keys(dictionary):
     '''Return a sorted list of the keys of the given dictionary.'''
-    sorted_keys = list(dictionary.keys())
-    sorted_keys.sort()
-
-    return sorted_keys
+    return sorted(list(dictionary.keys()))
 
 def sources_have_been_modified(sources):
     '''Return True if any of the given sources have been modified in any way.'''
