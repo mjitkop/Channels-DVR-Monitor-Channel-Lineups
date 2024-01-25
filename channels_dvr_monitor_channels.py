@@ -55,7 +55,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '2.1.0'
+VERSION              = '2.2.0'
 
 ################################################################################
 #                                                                              #
