@@ -25,6 +25,21 @@ Version History:
           [CHANGED] Show channel changes in order of channel names.
 - 2.2.0 : [IMPROVED] Added "Channels DVR lineup changes:" as first line in SMS message
           [NEW] Show duplicated channels in each modified source
+- 3.0.0 : [IMPROVED] Save reference files and the log file into a subdirectory that is
+                     named using the IP address and the port number of the server
+                     (better support for multiple servers)
+          [IMPROVED] When displaying duplicated channels, show the channel numbers
+                     without square brackets and without quotes (just the numbers)
+          [IMPROVED] Some cosmetic changes to increase readability in the
+                     detailed message
+          [NEW] Added the server URL as the first line of the detailed message
+                (useful information when monitoring multiple servers)
+          [NEW] Added the source URL (used in the source settings) below the source 
+                name in the detailed message
+          [NEW] Added the starting channel number of the modified source when
+                displaying the "Lineup changes" header
+          [NEW] Added the DVR URL on the second line of the SMS message (useful
+                information when monitoring multiple servers)
 """
 
 ################################################################################
@@ -33,7 +48,7 @@ Version History:
 #                                                                              #
 ################################################################################
 
-import argparse, json, os, requests, smtplib, sys, time
+import argparse, os, requests, smtplib, sys, time
 
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
@@ -55,7 +70,14 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '2.2.0'
+VERSION              = '3.0.0'
+
+################################################################################
+#                                                                              #
+#                               GLOBAL VARIABLES                               #
+#                                                                              #
+################################################################################
+Data_Subdirectory_Path = None
 
 ################################################################################
 #                                                                              #
@@ -78,22 +100,23 @@ class ChannelInfo:
 
 class ChannelsDVRSource:
     '''Attributes and methods to handle one channel source.'''
-    def __init__(self, source):
+    def __init__(self, source_json):
         '''Initialize the attributes of this source.'''
-        self.source = source
+        self.source = source_json
         self.name = self.source['FriendlyName']
-        self.current_lineup  = self.get_current_lineup_from_server()
-        self.previous_lineup = self.get_previous_lineup_from_file()
+        self.current_lineup  = None
+        self.previous_lineup = None
+        self.url = None
 
     def delete_lineup_file(self):
         '''
         Delete the text file that contains the channel lineup of this source.
         '''
-        file_name = self.name + '.txt'
+        file_name = create_local_file_name(self.name)
 
         if os.path.exists(file_name):
             os.remove(file_name)
-    
+        
     def get_added_channel_numbers(self):
         '''
         Compare the previous and current channel lineups and return the 
@@ -220,7 +243,7 @@ class ChannelsDVRSource:
         If a file for this source doesn't exist (i.e. the source is new), return an empty dictionary.
         '''
         reference_lineup = {}
-        file_name = self.name + '.txt'
+        file_name = create_local_file_name(self.name)
 
         if os.path.exists(file_name):
             with open(file_name) as txt_file:
@@ -257,7 +280,7 @@ class ChannelsDVRSource:
             removed_channels[name] = old_channel_info
 
         return removed_channels
-    
+
     def has_lineup_changes(self):
         '''
         Return a boolean: True if anything is different between the current and previous channel lineups.
@@ -276,7 +299,7 @@ class ChannelsDVRSource:
         '''
         Return a boolean: True when there is no existing channel lineup text file for this source.
         '''
-        is_source_new = not os.path.exists(self.name + '.txt')
+        is_source_new = not os.path.exists(create_local_file_name(self.name))
 
         return is_source_new
 
@@ -287,7 +310,7 @@ class ChannelsDVRSource:
         '''
         self.delete_lineup_file()
 
-        with open(self.name + '.txt', 'a') as txt_file:
+        with open(create_local_file_name(self.name), 'a') as txt_file:
             sorted_channel_numbers = sort_dictionary_keys(self.current_lineup)
 
             for channel_number in sorted_channel_numbers:
@@ -302,7 +325,22 @@ class ChannelsDVRSource:
 #                                                                              #
 ################################################################################
 
-def create_detailed_message(server_version, sources):
+def create_data_subdirectory(ip_address, port_number):
+    '''
+    Create a directory with the path as:
+    current directory + "_<ip_address>_<port_number>_data" at the end
+    '''
+    global Data_Subdirectory_Path
+
+    end_of_path = f'{ip_address}_{port_number}_data'
+    data_subdirectory_path = os.path.join(os.getcwd(), end_of_path)
+
+    if not os.path.exists(data_subdirectory_path):
+        os.mkdir(data_subdirectory_path)
+        
+    Data_Subdirectory_Path = data_subdirectory_path
+
+def create_detailed_message(dvr_url, server_version, sources):
     '''
     Generate a string that is easy to read in an email.
     It will start with the version of the Channels DVR server.
@@ -329,15 +367,17 @@ def create_detailed_message(server_version, sources):
     Example:
         "Pluto TV channel count: 358 (-2)"    
     '''
-    message = f'Channels DVR version: {server_version}\n'
+    message = f'Channels DVR server URL: {dvr_url}\n'
+    message += f'Channels DVR version: {server_version}\n'
     
     for source in sources:
         if source.is_new():
             message += '\n'
             number_of_channels = len(source.current_lineup)
-            message += f'New source with {number_of_channels} channels: {source.name}\n'
+            message += f'New source with {number_of_channels} channels: "{source.name}"\n'
             if number_of_channels:
-                message += f'See file {source.name}.txt for the full lineup.\n'
+                file_name = create_local_file_name(source.name)
+                message += f'See file {file_name} for the full lineup.\n'
         else:
             if source.has_lineup_changes():
                 deleted_channels    = source.get_deleted_channel_numbers()
@@ -350,12 +390,18 @@ def create_detailed_message(server_version, sources):
                 sorted_names   = get_sorted_channel_names_from_channel_changes(removed_channels, new_channels)
                 sorted_numbers = get_sorted_channel_numbers_from_lineup_changes(deleted_channels, added_channels, modified_channels)
 
-                message += '\n'
+                message += '\n--------------------------\n'
+
                 channel_count_diff = source.get_channel_count_difference()
-                message += f'{source.name}: {len(source.current_lineup)} channels ({channel_count_diff})\n'
+                message += f'\n{source.name}: {len(source.current_lineup)} channels ({channel_count_diff})\n'
+
+                source_url = get_source_url(dvr_url, source.name)
+                if source_url:
+                    message += f'({source_url})\n'
 
                 if removed_channels or new_channels or duplicated_channels:
-                    message += '------ Lineup changes ------\n'
+                    starting_channel_number = sorted(list(source.current_lineup.keys()))[0]
+                    message += f'\n<--- Lineup changes (starting at {starting_channel_number}) --->\n'
 
                 for number in sorted_numbers:
                     if number in list(deleted_channels.keys()):
@@ -370,7 +416,7 @@ def create_detailed_message(server_version, sources):
                         message += f'! {number} : {new_channel_info.name} (was {old_channel_info.name})\n'
                     
                 if removed_channels or new_channels:
-                    message += '------ Channel changes ------\n'
+                    message += '\n<--- Channel changes --->\n'
                 
                 for name in sorted_names:
                     if name in list(removed_channels.keys()):
@@ -381,27 +427,47 @@ def create_detailed_message(server_version, sources):
                         message += f'+ {name} ({channel_info.number})\n'
 
                 if duplicated_channels:
-                    message += '---- Duplicated channels ----\n'
+                    message += '\n<--- Duplicated channels --->\n'
                     sorted_names = sorted(list(duplicated_channels.keys()))
                     for name in sorted_names:
                         channel_info_list = duplicated_channels[name]
                         sorted_numbers = sorted([channel_info.number for channel_info in channel_info_list])
-                        message += f'{name}: {sorted_numbers}\n'
+                        formatted_numbers = str(sorted_numbers).replace("'", "").replace('[', '').strip(']')
+                        message += f'{name}: {formatted_numbers}\n'
 
     return message
-    
+
+def create_local_file_name(name):
+    '''
+    If the given name contains spaces, replace them with underscores.
+    Prefix the file name with the data directory path.
+    The file extension will be ".txt"
+    '''
+    if not name.endswith('.txt'):
+        name = name + '.txt'
+
+    return os.path.join(Data_Subdirectory_Path, name.replace(' ', '_'))
+
 def create_sources(dvr_url):
     '''
-    Given the raw json list of devices from the Channels DVR server, extract the
-    relevant information and generate a list of sources, which will be instances
+    Given the DVR URL, read the raw json list of devices from the Channels DVR server, 
+    extract the relevant information and generate a list of sources, which will be instances
     of the ChannelsDVRSource class.
     '''
     devices_url = f'{dvr_url}/devices'
     devices = requests.get(devices_url).json()
+
+    sources = []
+    for device in devices:
+        source = ChannelsDVRSource(device)
+        source.current_lineup  = source.get_current_lineup_from_server()
+        source.previous_lineup = source.get_previous_lineup_from_file()
+
+        sources.append(source)
     
-    return [ChannelsDVRSource(device) for device in devices]
-    
-def create_summary_message(sources):
+    return sources
+
+def create_summary_message(dvr_url, sources):
     '''
     Generate a short message that is suitable for a text/SMS.
     It will start with this line: "Channels DVR lineup changes:".
@@ -413,6 +479,7 @@ def create_summary_message(sources):
     Pluto TV: 373 (+3)
     '''
     message = "Channels DVR lineup changes:\n"
+    message += f'({dvr_url})\n'
     
     for source in sources:
         if source.has_lineup_changes():
@@ -440,7 +507,8 @@ def display_header(dvr_url, frequency, log_changes, sender_address, recipient_ad
             print('')
         
     if log_changes:
-        print(f'Changes will be written to log file {LOG_FILE}.')
+        full_file_name = create_local_file_name(LOG_FILE)
+        print(f'Changes will be written to log file {full_file_name}.')
         print('')        
 
 def get_channels_dvr_version(dvr_url):
@@ -500,6 +568,22 @@ def get_sorted_unique_channel_names_from_lineup(lineup):
             names.append(name)
 
     return sorted(names)
+
+def get_source_url(dvr_url, source_name):
+    '''
+    Retrieve the source settings from the server and return the source URL used in the settings.
+    '''
+    source_name_without_spaces = source_name.replace(' ', '')
+    source_settings_url = f'{dvr_url}/providers/m3u/sources/{source_name_without_spaces}'
+
+    try:
+        source_settings_json = requests.get(source_settings_url).json()
+        source_url = source_settings_json.get('url', None)
+    except:
+        # In the case of a HDHomeRun or TV Everywhere source, there is no URL
+        source_url = None
+
+    return source_url
 
 def notify_server_offline(dvr_url, sender_address, password, recipient_address, text_number):
     '''If email address and/or text number are/is provided, notify the user that the server is offline.'''
@@ -573,11 +657,11 @@ def update_references(sources):
 
 def write_to_log_file(timestamp, message):
     '''Write the given message to the log file.'''
-    string_to_write = '\n-------------------------------------\n\n'
-    string_to_write += timestamp.strftime("%Y-%m-%d %H:%M:%S") + '\n'
+    string_to_write = timestamp.strftime("%Y-%m-%d %H:%M:%S") + '\n'
     string_to_write += message
+    string_to_write += '\n----------------------------------------------------\n\n'
 
-    with open(LOG_FILE, 'a') as log_file:
+    with open(create_local_file_name(LOG_FILE), 'a') as log_file:
         log_file.write(string_to_write)
 
 ################################################################################
@@ -661,6 +745,8 @@ if __name__ == "__main__":
     server_is_online = True
     dvr_url = f'http://{ip_address}:{port_number}'
 
+    create_data_subdirectory(ip_address, port_number)
+
     display_header(dvr_url, frequency, log_changes, sender_address, recipient_address, text_number)
     
     while server_is_online:
@@ -678,7 +764,7 @@ if __name__ == "__main__":
             if sources_have_been_modified(sources):
                 print('')
 
-                message = create_detailed_message(server_version, sources)
+                message = create_detailed_message(dvr_url, server_version, sources)
 
                 print(message)
                 
@@ -693,7 +779,7 @@ if __name__ == "__main__":
                         
                     if text_number:
                         subject = ''
-                        message = create_summary_message(sources)
+                        message = create_summary_message(dvr_url, sources)
                         print(f'Sending SMS to {text_number}...')
                         send_email(sender_address, password, text_number, subject, message)
 
