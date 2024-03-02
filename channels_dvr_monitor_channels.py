@@ -40,6 +40,11 @@ Version History:
                 displaying the "Lineup changes" header
           [NEW] Added the DVR URL on the second line of the SMS message (useful
                 information when monitoring multiple servers)
+- 3.1.0 : [IMPROVED] Typo in the name of the data sub-directory
+          [CHANGED] Logging the lineup changes is a standard feature now
+          [CHANGED] The log file will contain the lineup changes of the current year.
+                    A new file is created every year with the year number in the name.
+          [NEW] File "last_activity.log" to log the result of the last check only
 """
 
 ################################################################################
@@ -61,7 +66,8 @@ from email.mime.text import MIMEText
 
 DEFAULT_PORT_NUMBER  = '8089'
 EMAIL_SUBJECT        = 'Channels DVR: changes in channel lineups'
-LOG_FILE             = "cdvr_channel_lineup_changes.txt"
+LOG_FILE_CHANGES     = 'channel_lineup_changes.log'
+LOG_FILE_ACTIVITY    = 'last_activity.log'
 LOOPBACK_ADDRESS     = '127.0.0.1'
 SEPARATOR_CHARACTER  = '='
 SMTP_PORT            = 587
@@ -70,7 +76,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '3.0.0'
+VERSION              = '3.1.0'
 
 ################################################################################
 #                                                                              #
@@ -103,8 +109,8 @@ class ChannelsDVRSource:
     def __init__(self, source_json):
         '''Initialize the attributes of this source.'''
         self.source = source_json
-        self.name = self.source['FriendlyName']
         self.current_lineup  = None
+        self.name = self.source['FriendlyName']
         self.previous_lineup = None
         self.url = None
 
@@ -319,6 +325,57 @@ class ChannelsDVRSource:
                 line_to_write = f'{channel_number}{SEPARATOR_CHARACTER}{channel_name}\n'
                 txt_file.write(line_to_write)
 
+class LogFile:
+    '''Attributes and methods to manage the log file'''
+    def __init__(self) -> None:
+        self.last_check_time = None
+        self.name = self._create_new_file_name()
+
+    def _create_new_file_name(self):
+        '''Create a new proper name for the log file.'''
+        this_year = datetime.now().strftime('%Y')
+
+        return create_local_file_name(this_year + '_' + LOG_FILE_CHANGES)
+
+    def _is_it_a_new_month(self):
+        '''Return True if the last check was last month.'''
+        is_new_month = False
+
+        if self.last_check_time:
+            is_new_month = datetime.now().month != self.last_check_time.month
+
+        return is_new_month
+
+    def _is_it_a_new_year(self):
+        '''Return True is the last check was last year.'''
+        is_new_year = False
+
+        if self.last_check_time:
+            is_new_year = datetime.now().year != self.last_check_time.year
+        
+        return is_new_year
+
+    def _is_new_file(self):
+        '''Return True if the file doesn't exist.'''
+        if not self.name:
+            self.name = self._create_new_file_name()
+
+        return not os.path.exists(self.name)
+
+    def write(self, message):
+        '''Write the given message to the log file'''
+        self.last_check_time = datetime.now()
+
+        if not self._is_new_file() and self._is_it_a_new_year():
+            self.name = self._create_new_file_name()
+
+        string_to_write = self.last_check_time.strftime("%Y-%m-%d %H:%M:%S") + '\n\n'
+        string_to_write += message
+        string_to_write += '\n****************************************************\n\n'
+
+        with open(self.name, 'a') as log_file:
+            log_file.write(string_to_write)
+
 ################################################################################
 #                                                                              #
 #                                  FUNCTIONS                                   #
@@ -328,11 +385,11 @@ class ChannelsDVRSource:
 def create_data_subdirectory(ip_address, port_number):
     '''
     Create a directory with the path as:
-    current directory + "_<ip_address>_<port_number>_data" at the end
+    current directory + "_<ip_address>-<port_number>_data" at the end
     '''
     global Data_Subdirectory_Path
 
-    end_of_path = f'{ip_address}_{port_number}_data'
+    end_of_path = f'{ip_address}-{port_number}_data'
     data_subdirectory_path = os.path.join(os.getcwd(), end_of_path)
 
     if not os.path.exists(data_subdirectory_path):
@@ -441,10 +498,10 @@ def create_local_file_name(name):
     '''
     If the given name contains spaces, replace them with underscores.
     Prefix the file name with the data directory path.
-    The file extension will be ".txt"
+    The file extension will be ".log"
     '''
-    if not name.endswith('.txt'):
-        name = name + '.txt'
+    if not name.endswith('.log'):
+        name = name + '.log'
 
     return os.path.join(Data_Subdirectory_Path, name.replace(' ', '_'))
 
@@ -488,7 +545,7 @@ def create_summary_message(dvr_url, sources):
 
     return message
 
-def display_header(dvr_url, frequency, log_changes, sender_address, recipient_address, text_number):
+def display_header(dvr_url, frequency, sender_address, recipient_address, text_number, log_file):
     '''Print a message on the screen based on the user inputs.'''
     print('')
     print(f'Using Channels DVR server at: {dvr_url}.')
@@ -506,10 +563,9 @@ def display_header(dvr_url, frequency, log_changes, sender_address, recipient_ad
             print(f'A text message will be sent to {text_number} when changes are detected.')
             print('')
         
-    if log_changes:
-        full_file_name = create_local_file_name(LOG_FILE)
-        print(f'Changes will be written to log file {full_file_name}.')
-        print('')        
+    print(f'Channel lineup changes will be written to:\n{log_file.name}\n')
+
+    print(f'The last activity will be saved in:\n{create_local_file_name(LOG_FILE_ACTIVITY)}\n')  
 
 def get_channels_dvr_version(dvr_url):
     '''
@@ -594,12 +650,14 @@ def notify_server_offline(dvr_url, sender_address, password, recipient_address, 
         if recipient_address:
             print(f'Sending email to {recipient_address}...')
             send_email(sender_address, password, recipient_address, subject, message_body)
+            print('Done')
 
         if text_number:
             message = subject + '\n'
             message += message_body
             print(f'Sending SMS to {text_number}...')
             send_email(sender_address, password, text_number, '', message)
+            print('Done')
 
 def send_email(sender_address, password, recipient_address, subject, message_body):
     '''
@@ -617,6 +675,8 @@ def send_message(sender_address, password, destination, msg):
     '''Send a message from the given email account to the specified destination.'''
     provider = get_email_provider(sender_address)
     smtp_server = SMTP_SERVER_ADDRESS[provider]
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
         # Create a secure SSL connection to the SMTP server
@@ -631,15 +691,13 @@ def send_message(sender_address, password, destination, msg):
         # Send the email
         server.sendmail(sender_address, [destination], msg.as_string())
 
-        print('Message sent successfully!')
-        print('')
-
     except Exception as e:
-        print('Error sending message:', str(e))
+        print(f'{current_time} - Error sending message: ' + str(e))
 
     finally:
         # Close the connection to the SMTP server
-        server.quit()
+        if server:
+            server.quit()
 
 def sort_dictionary_keys(dictionary):
     '''Return a sorted list of the keys of the given dictionary.'''
@@ -655,14 +713,13 @@ def update_references(sources):
         if source.has_lineup_changes():
             source.save_channel_lineup_to_file()
 
-def write_to_log_file(timestamp, message):
-    '''Write the given message to the log file.'''
-    string_to_write = timestamp.strftime("%Y-%m-%d %H:%M:%S") + '\n'
-    string_to_write += message
-    string_to_write += '\n----------------------------------------------------\n\n'
+def write_activity_to_file(message):
+    '''Write the given message to the activity file. Overwrite the previous contents.'''
+    file_name = create_local_file_name(LOG_FILE_ACTIVITY)
 
-    with open(create_local_file_name(LOG_FILE), 'a') as log_file:
-        log_file.write(string_to_write)
+    with open(file_name, 'w') as activity_file:
+        activity_file.write(message)
+
 
 ################################################################################
 #                                                                              #
@@ -687,7 +744,6 @@ if __name__ == "__main__":
                              'Default: 30. Minimum: 5.')
     parser.add_argument('-i', '--ip_address', type=str, default=LOOPBACK_ADDRESS, \
                         help='IP address of the Channels DVR server. Not required. Default: 127.0.0.1')
-    parser.add_argument('-l', '--log', action='store_true', help='Log channel changes to a file.')
     parser.add_argument('-p', '--port_number', type=str, default=DEFAULT_PORT_NUMBER, \
                         help='Port number of the Channels DVR server. Not required. Default: 8089')
     parser.add_argument('-P', '--password', type=str, default=None, \
@@ -707,7 +763,6 @@ if __name__ == "__main__":
     sender_address    = args.email_address
     frequency         = args.frequency
     ip_address        = args.ip_address
-    log_changes       = args.log
     password          = args.password
     port_number       = args.port_number
     recipient_address = args.recipient_address
@@ -747,7 +802,9 @@ if __name__ == "__main__":
 
     create_data_subdirectory(ip_address, port_number)
 
-    display_header(dvr_url, frequency, log_changes, sender_address, recipient_address, text_number)
+    log_file = LogFile()
+
+    display_header(dvr_url, frequency, sender_address, recipient_address, text_number, log_file)
     
     while server_is_online:
         # Check for changes in the channel lineups in all sources
@@ -756,40 +813,41 @@ if __name__ == "__main__":
         if server_version:
             current_time = datetime.now()
             next_check_time = current_time + timedelta(minutes=frequency)
-            print( 'Last check    :', current_time.strftime("%Y-%m-%d %H:%M:%S"))
-            print(f'Server version: {server_version}')
+
+            activity_string = 'Check time    : ' + current_time.strftime("%Y-%m-%d %H:%M:%S") + '\n'
+            activity_string += f'Server version: {server_version}\n\n'
             
             sources = create_sources(dvr_url)
         
             if sources_have_been_modified(sources):
-                print('')
-
                 message = create_detailed_message(dvr_url, server_version, sources)
 
-                print(message)
-                
-                if log_changes:
-                    write_to_log_file(current_time, message)
+                log_file.write(message)
+
+                activity_string += message + '\n'
             
                 if sender_address:
                     if recipient_address:
                         subject = EMAIL_SUBJECT
-                        print(f'Sending email to {recipient_address}...')
+                        activity_string += f'Sending email to {recipient_address}... '
                         send_email(sender_address, password, recipient_address, subject, message)
+                        activity_string += 'Done\n'
                         
                     if text_number:
                         subject = ''
                         message = create_summary_message(dvr_url, sources)
-                        print(f'Sending SMS to {text_number}...')
+                        activity_string += f'Sending SMS to {text_number}... '
                         send_email(sender_address, password, text_number, subject, message)
+                        activity_string += 'Done\n'
 
                 update_references(sources)
 
             else:
-                print('No changes found in any source.')
+                activity_string += 'No changes found in any source.\n'
             
-            print('Next check:', next_check_time.strftime("%Y-%m-%d %H:%M:%S"))
-            print('')
+            activity_string += '\nNext check: ' + next_check_time.strftime("%Y-%m-%d %H:%M:%S") + '\n'
+
+            write_activity_to_file(activity_string)
 
             time.sleep(frequency * 60)
         else:
