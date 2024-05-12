@@ -45,6 +45,9 @@ Version History:
           [CHANGED] The log file will contain the lineup changes of the current year.
                     A new file is created every year with the year number in the name.
           [NEW] File "last_activity.log" to log the result of the last check only
+- 3.2.0 : [IMPROVED] Ignore sources that have the "Lineup" field empty
+          [FIXED] Crash when a new source with zero channels is detected
+          [NEW] Detect, report, and back up removed sources (in "Deleted_Sources" subdirectory)
 """
 
 ################################################################################
@@ -53,7 +56,7 @@ Version History:
 #                                                                              #
 ################################################################################
 
-import argparse, os, requests, smtplib, sys, time
+import argparse, glob, os, requests, smtplib, sys, time
 
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
@@ -65,6 +68,7 @@ from email.mime.text import MIMEText
 ################################################################################
 
 DEFAULT_PORT_NUMBER  = '8089'
+DELETED_SOURCES_DIR  = 'Deleted_Sources'
 EMAIL_SUBJECT        = 'Channels DVR: changes in channel lineups'
 LOG_FILE_CHANGES     = 'channel_lineup_changes.log'
 LOG_FILE_ACTIVITY    = 'last_activity.log'
@@ -76,7 +80,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '3.1.0'
+VERSION              = '3.2.0'
 
 ################################################################################
 #                                                                              #
@@ -118,11 +122,11 @@ class ChannelsDVRSource:
         '''
         Delete the text file that contains the channel lineup of this source.
         '''
-        file_name = create_local_file_name(self.name)
+        if not self.is_new():
+            file_name = create_local_file_name(self.name)
+            if os.path.exists(file_name):
+                os.remove(file_name)
 
-        if os.path.exists(file_name):
-            os.remove(file_name)
-        
     def get_added_channel_numbers(self):
         '''
         Compare the previous and current channel lineups and return the 
@@ -301,11 +305,16 @@ class ChannelsDVRSource:
 
         return is_lineup_different
 
+    def is_empty(self):
+        '''Return True if this source has zero channels.'''
+        return len(self.current_lineup) == 0
+
     def is_new(self):
         '''
         Return a boolean: True when there is no existing channel lineup text file for this source.
         '''
-        is_source_new = not os.path.exists(create_local_file_name(self.name))
+        full_path = create_local_file_name(self.name)
+        is_source_new = not os.path.exists(full_path)
 
         return is_source_new
 
@@ -316,19 +325,23 @@ class ChannelsDVRSource:
         '''
         self.delete_lineup_file()
 
-        with open(create_local_file_name(self.name), 'a') as txt_file:
-            sorted_channel_numbers = sort_dictionary_keys(self.current_lineup)
+        if self.is_empty():
+            # Create an empty file
+            with open(create_local_file_name(self.name), 'w') as txt_file:
+                pass 
+        else:
+            with open(create_local_file_name(self.name), 'a') as txt_file:
+                sorted_channel_numbers = sort_dictionary_keys(self.current_lineup)
 
-            for channel_number in sorted_channel_numbers:
-                channel_info = self.current_lineup[channel_number]
-                channel_name = channel_info.name
-                line_to_write = f'{channel_number}{SEPARATOR_CHARACTER}{channel_name}\n'
-                txt_file.write(line_to_write)
+                for channel_number in sorted_channel_numbers:
+                    channel_info = self.current_lineup[channel_number]
+                    channel_name = channel_info.name
+                    line_to_write = f'{channel_number}{SEPARATOR_CHARACTER}{channel_name}\n'
+                    txt_file.write(line_to_write)
 
 class LogFile:
     '''Attributes and methods to manage the log file'''
     def __init__(self) -> None:
-        self.last_check_time = None
         self.name = self._create_new_file_name()
 
     def _create_new_file_name(self):
@@ -336,40 +349,19 @@ class LogFile:
         this_year = datetime.now().strftime('%Y')
 
         return create_local_file_name(this_year + '_' + LOG_FILE_CHANGES)
-
-    def _is_it_a_new_month(self):
-        '''Return True if the last check was last month.'''
-        is_new_month = False
-
-        if self.last_check_time:
-            is_new_month = datetime.now().month != self.last_check_time.month
-
-        return is_new_month
-
-    def _is_it_a_new_year(self):
-        '''Return True is the last check was last year.'''
-        is_new_year = False
-
-        if self.last_check_time:
-            is_new_year = datetime.now().year != self.last_check_time.year
-        
-        return is_new_year
-
+    
     def _is_new_file(self):
-        '''Return True if the file doesn't exist.'''
-        if not self.name:
-            self.name = self._create_new_file_name()
-
+        '''Return True if the file doesn't exist on the disk.'''
         return not os.path.exists(self.name)
 
     def write(self, message):
         '''Write the given message to the log file'''
-        self.last_check_time = datetime.now()
+        self.name = self._create_new_file_name()
 
-        if not self._is_new_file() and self._is_it_a_new_year():
-            self.name = self._create_new_file_name()
+        if self._is_new_file():
+            print(f'Channel lineup changes will be written to:\n{self.name}\n\n')
 
-        string_to_write = self.last_check_time.strftime("%Y-%m-%d %H:%M:%S") + '\n\n'
+        string_to_write = datetime.now().strftime("%Y-%m-%d %H:%M:%S") + '\n\n'
         string_to_write += message
         string_to_write += '\n****************************************************\n\n'
 
@@ -426,14 +418,22 @@ def create_detailed_message(dvr_url, server_version, sources):
     '''
     message = f'Channels DVR server URL: {dvr_url}\n'
     message += f'Channels DVR version: {server_version}\n'
+
+    deleted_sources = get_deleted_sources(sources)
+    if deleted_sources:
+        message += '\n------------------------------\n\n'
+
+        for source_name in deleted_sources:
+            message += f'Deleted source: "{source_name}"\n'
     
     for source in sources:
         if source.is_new():
-            message += '\n'
+            message += '\n------------------------------\n\n'
+
             number_of_channels = len(source.current_lineup)
             message += f'New source with {number_of_channels} channels: "{source.name}"\n'
-            if number_of_channels:
-                file_name = create_local_file_name(source.name)
+            file_name = create_local_file_name(source.name)
+            if not source.is_empty():
                 message += f'See file {file_name} for the full lineup.\n'
         else:
             if source.has_lineup_changes():
@@ -447,18 +447,19 @@ def create_detailed_message(dvr_url, server_version, sources):
                 sorted_names   = get_sorted_channel_names_from_channel_changes(removed_channels, new_channels)
                 sorted_numbers = get_sorted_channel_numbers_from_lineup_changes(deleted_channels, added_channels, modified_channels)
 
-                message += '\n--------------------------\n'
+                message += '\n------------------------------\n\n'
 
                 channel_count_diff = source.get_channel_count_difference()
-                message += f'\n{source.name}: {len(source.current_lineup)} channels ({channel_count_diff})\n'
+                message += f'{source.name}: {len(source.current_lineup)} channels ({channel_count_diff})\n'
 
                 source_url = get_source_url(dvr_url, source.name)
                 if source_url:
                     message += f'({source_url})\n'
 
                 if removed_channels or new_channels or duplicated_channels:
-                    starting_channel_number = sorted(list(source.current_lineup.keys()))[0]
-                    message += f'\n<--- Lineup changes (starting at {starting_channel_number}) --->\n'
+                    if not source.is_empty():
+                        starting_channel_number = sorted(list(source.current_lineup.keys()))[0]
+                        message += f'\n<--- Lineup changes (starting at {starting_channel_number}) --->\n'
 
                 for number in sorted_numbers:
                     if number in list(deleted_channels.keys()):
@@ -516,11 +517,12 @@ def create_sources(dvr_url):
 
     sources = []
     for device in devices:
-        source = ChannelsDVRSource(device)
-        source.current_lineup  = source.get_current_lineup_from_server()
-        source.previous_lineup = source.get_previous_lineup_from_file()
+        if device['Lineup']:
+            source = ChannelsDVRSource(device)
+            source.current_lineup  = source.get_current_lineup_from_server()
+            source.previous_lineup = source.get_previous_lineup_from_file()
 
-        sources.append(source)
+            sources.append(source)
     
     return sources
 
@@ -547,6 +549,8 @@ def create_summary_message(dvr_url, sources):
 
 def display_header(dvr_url, frequency, sender_address, recipient_address, text_number, log_file):
     '''Print a message on the screen based on the user inputs.'''
+    print('')
+    print(f'Script version {VERSION}')
     print('')
     print(f'Using Channels DVR server at: {dvr_url}.')
     print(f'Checking for channel lineup changes every {frequency} minutes.')
@@ -582,9 +586,33 @@ def get_channels_dvr_version(dvr_url):
     
     return dvr_version
 
+def get_deleted_sources(sources):
+    '''Return a list of source names that are present on the disk and not on the server.'''
+    sources_on_disk   = get_source_names_from_disk()
+    sources_on_server = [source.name for source in sources]
+
+    deleted_sources = [source_name for source_name in sources_on_disk if source_name not in sources_on_server]
+
+    return deleted_sources
+
 def get_email_provider(sender_address):
     '''Given the email address as user@provider.com, return the provider.'''
     return sender_address.lower().split('@')[1].split('.')[0]
+
+def get_modified_sources(sources):
+    '''Return the list of existing sources that have lineup changes.'''
+    modified_sources = [source.name for source in sources if source.has_lineup_changes()]
+
+    return modified_sources
+
+def get_new_sources(sources):
+    '''Return a list of sources from the server that are not saved on the disk.'''
+    sources_on_disk   = get_source_names_from_disk()
+    sources_on_server = [source.name for source in sources]
+
+    new_sources = [source_name for source_name in sources_on_server if source_name not in sources_on_disk]
+
+    return new_sources
 
 def get_sorted_channel_names_from_channel_changes(removed_channels, new_channels):
     '''
@@ -641,6 +669,14 @@ def get_source_url(dvr_url, source_name):
 
     return source_url
 
+def get_source_names_from_disk():
+    '''Retrieve the names of the sources that are saved on the disk.'''
+    all_log_files = [os.path.basename(log_file) for log_file in glob.glob(f'{Data_Subdirectory_Path}/*.log')]
+    source_files = [f for f in all_log_files if ((f != LOG_FILE_ACTIVITY) and (LOG_FILE_CHANGES not in f))]
+    sources = [os.path.splitext(source_file)[0].replace('_', ' ') for source_file in source_files]
+
+    return sources
+
 def notify_server_offline(dvr_url, sender_address, password, recipient_address, text_number):
     '''If email address and/or text number are/is provided, notify the user that the server is offline.'''
     if sender_address and password:
@@ -658,6 +694,42 @@ def notify_server_offline(dvr_url, sender_address, password, recipient_address, 
             print(f'Sending SMS to {text_number}...')
             send_email(sender_address, password, text_number, '', message)
             print('Done')
+
+def move_deleted_sources(source_names):
+    '''Move the deleted sources into a subdirectory.'''
+    for name in source_names:
+        full_name = create_local_file_name(name)
+        move_file_to_subdirectory(full_name, DELETED_SOURCES_DIR)
+
+def move_file_to_subdirectory(file_path, subdir_name):
+    # Get the directory of the file
+    dir_path = os.path.dirname(file_path)
+    
+    # Create the subdirectory path
+    subdir_path = os.path.join(dir_path, subdir_name)
+    
+    # Check if the subdirectory does not exist
+    if not os.path.exists(subdir_path):
+        # Create the subdirectory
+        os.makedirs(subdir_path)
+    
+    # Get the current date in 'YYYY-MM-DD' format
+    date_suffix = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    
+    # Get the base name of the file (without extension)
+    base_name = os.path.splitext(os.path.basename(file_path))[0]
+    
+    # Get the extension of the file
+    extension = os.path.splitext(file_path)[1]
+    
+    # Create the new file name with the date suffix
+    new_file_name = f"{base_name}_{date_suffix}{extension}"
+    
+    # Create the new file path in the subdirectory
+    new_file_path = os.path.join(subdir_path, new_file_name)
+    
+    # Move the file to the subdirectory
+    os.rename(file_path, new_file_path)
 
 def send_email(sender_address, password, recipient_address, subject, message_body):
     '''
@@ -704,13 +776,17 @@ def sort_dictionary_keys(dictionary):
     return sorted(list(dictionary.keys()))
 
 def sources_have_been_modified(sources):
-    '''Return True if any of the given sources have been modified in any way.'''
-    return any([source.has_lineup_changes() for source in sources])
+    '''Return True if any of the sources have been modified in any way.'''
+    deleted_sources  = get_deleted_sources(sources)
+    new_sources      = get_new_sources(sources)
+    modified_sources = get_modified_sources(sources)
+
+    return bool(deleted_sources or new_sources or modified_sources)
 
 def update_references(sources):
     '''If any of the given sources have been modified, update the text files that contain their channel lineups.'''
     for source in sources:
-        if source.has_lineup_changes():
+        if source.has_lineup_changes() or source.is_new():
             source.save_channel_lineup_to_file()
 
 def write_activity_to_file(message):
@@ -814,11 +890,12 @@ if __name__ == "__main__":
             current_time = datetime.now()
             next_check_time = current_time + timedelta(minutes=frequency)
 
-            activity_string = 'Check time    : ' + current_time.strftime("%Y-%m-%d %H:%M:%S") + '\n'
+            activity_string = 'Check time: ' + current_time.strftime("%Y-%m-%d %H:%M:%S") + '\n\n'
+
             activity_string += f'Server version: {server_version}\n\n'
             
             sources = create_sources(dvr_url)
-        
+
             if sources_have_been_modified(sources):
                 message = create_detailed_message(dvr_url, server_version, sources)
 
@@ -848,6 +925,8 @@ if __name__ == "__main__":
             activity_string += '\nNext check: ' + next_check_time.strftime("%Y-%m-%d %H:%M:%S") + '\n'
 
             write_activity_to_file(activity_string)
+
+            move_deleted_sources(get_deleted_sources(sources))
 
             time.sleep(frequency * 60)
         else:
