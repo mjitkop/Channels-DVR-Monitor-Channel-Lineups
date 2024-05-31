@@ -48,6 +48,9 @@ Version History:
 - 3.2.0 : [IMPROVED] Ignore sources that have the "Lineup" field empty
           [FIXED] Crash when a new source with zero channels is detected
           [NEW] Detect, report, and back up removed sources (in "Deleted_Sources" subdirectory)
+- 3.3.0 : [FIXED] Two or more sources each using the same HDHomeRun device model 
+                  were combined into one source.
+                  Note: untested due to lack of hardware.
 """
 
 ################################################################################
@@ -80,7 +83,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '3.2.0'
+VERSION              = '3.3.0'
 
 ################################################################################
 #                                                                              #
@@ -114,9 +117,26 @@ class ChannelsDVRSource:
         '''Initialize the attributes of this source.'''
         self.source = source_json
         self.current_lineup  = None
-        self.name = self.source['FriendlyName']
+        self.name = self._create_source_name()
         self.previous_lineup = None
         self.url = None
+
+    def _create_source_name(self):
+        '''
+        Return a proper name for this source.
+        This is especially needed when two or more sources use the same HDHomeRun
+        device model. In this case, the name will be made of the friendly name + 
+        the device ID in order to differentiate the sources.
+        '''
+        name = self.source['FriendlyName']
+
+        provider = self.source.get('Provider', None)
+        if not provider:
+            # A source from a HDHomeRun device typically has no "Provider" field.
+            # In this case, add the device ID after the friendly name of the source.
+            name += f" {self.source['DeviceID']}"
+        
+        return name
 
     def delete_lineup_file(self):
         '''
