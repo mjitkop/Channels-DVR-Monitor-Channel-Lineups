@@ -51,6 +51,7 @@ Version History:
 - 3.3.0 : [FIXED] Two or more sources each using the same HDHomeRun device model 
                   were combined into one source.
                   Note: untested due to lack of hardware.
+- 3.4.0 : [NEW] Added option '-s' to specify a start time in 24-hour format
 """
 
 ################################################################################
@@ -83,7 +84,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '3.3.0'
+VERSION              = '3.4.0'
 
 ################################################################################
 #                                                                              #
@@ -567,12 +568,15 @@ def create_summary_message(dvr_url, sources):
 
     return message
 
-def display_header(dvr_url, frequency, sender_address, recipient_address, text_number, log_file):
+def display_header(dvr_url, frequency, sender_address, recipient_address, start_time, text_number, log_file):
     '''Print a message on the screen based on the user inputs.'''
     print('')
     print(f'Script version {VERSION}')
     print('')
     print(f'Using Channels DVR server at: {dvr_url}.')
+    print('')
+    if start_time:
+        print(f'The first check will be done when the current time is {start_time}.')
     print(f'Checking for channel lineup changes every {frequency} minutes.')
     print('')
     
@@ -809,6 +813,35 @@ def update_references(sources):
         if source.has_lineup_changes() or source.is_new():
             source.save_channel_lineup_to_file()
 
+def wait_until_start_time(start_time_str):
+    '''Wait until the current time is equal to the given start time.'''
+    start_time = datetime.strptime(start_time_str, '%H:%M').time()
+    start_time_in_minutes = 60 * start_time.hour + start_time.minute
+
+    current_time = datetime.now().time()
+    current_time_in_minutes = 60 * current_time.hour + current_time.minute
+
+    delta = start_time_in_minutes - current_time_in_minutes
+
+    if delta < 0:
+        wait_duration = 24 * 60 + delta
+    else:
+        wait_duration = delta
+
+    wait_hour    = wait_duration // 60
+    wait_minutes = wait_duration % 60
+
+    print(f'Current time: {current_time.strftime("%H:%M")}')
+    print(f'Waiting for {wait_hour}h {wait_minutes}m until the current time is {start_time_str}...')
+
+    time.sleep(60 * wait_duration)
+
+    current_time = datetime.now().time().strftime("%H:%M")
+    
+    print('')
+    print(f'The time is now {current_time} and channel lineup monitoring is starting.')
+    print('')
+
 def write_activity_to_file(message):
     '''Write the given message to the activity file. Overwrite the previous contents.'''
     file_name = create_local_file_name(LOG_FILE_ACTIVITY)
@@ -847,6 +880,8 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--recipient_address', type=str, default=None, \
                         help='Email address of the recipient. Not required if -t is specified. Use with -e and -P. ' + \
                              'May be the same as -e. May be used with -t too.')
+    parser.add_argument('-s', '--start_time', type=str, default=None, \
+                        help='Time in 24-hour format HH:MM when you want the first check to start.')
     parser.add_argument('-t', '--text_number', type=str, default=None, \
                         help='Cell phone number to send a text to in the format: <10 digits>@<SMS gateway>. ' + \
                              'Not required if -r is specified. Use with -e and -P. May be used with -r too.')
@@ -862,6 +897,7 @@ if __name__ == "__main__":
     password          = args.password
     port_number       = args.port_number
     recipient_address = args.recipient_address
+    start_time        = args.start_time
     text_number       = args.text_number
     version           = args.version
 
@@ -900,14 +936,21 @@ if __name__ == "__main__":
 
     log_file = LogFile()
 
-    display_header(dvr_url, frequency, sender_address, recipient_address, text_number, log_file)
+    display_header(dvr_url, frequency, sender_address, recipient_address, start_time, text_number, log_file)
     
+    if start_time:
+        # The user has provided a specific start time.
+        wait_until_start_time(start_time)
+        
+    print('Press Ctrl + C at any time to stop, or close this window.')
+
     while server_is_online:
         # Check for changes in the channel lineups in all sources
         server_version = get_channels_dvr_version(dvr_url)
 
         if server_version:
             current_time = datetime.now()
+
             next_check_time = current_time + timedelta(minutes=frequency)
 
             activity_string = 'Check time: ' + current_time.strftime("%Y-%m-%d %H:%M:%S") + '\n\n'
