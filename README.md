@@ -56,4 +56,8 @@ EMAIL_ADDRESS from Outlook.com: text messages are very delayed in my tests (more
 
 A Gmail account has NOT been tested at all as the sender of either emails or text messages, but support for it is present in the script. 
  
+---
 
+As of version 3.4.0, you now have the option to specify a start time instead of starting immediately. 
+Use the '-s' option followed by a time in the 24-hour format HH:MM. The time that you specify is within the next 24 hours.
+If this option is not used, the first check will start immediately.
