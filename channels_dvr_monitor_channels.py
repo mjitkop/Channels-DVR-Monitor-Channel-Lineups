@@ -52,6 +52,11 @@ Version History:
                   were combined into one source.
                   Note: untested due to lack of hardware.
 - 3.4.0 : [NEW] Added option '-s' to specify a start time in 24-hour format
+- 3.4.1 : [FIXED] Sources with underscores in their names (e.g. "ADBTuner - app_cbs")
+                  were continually reported as new sources because get_source_names_from_disk()
+                  converted all underscores to spaces when reconstructing names from filenames,
+                  making the on-disk name not match the server name. This caused the file to be
+                  moved to Deleted_Sources every cycle, then re-detected as new the next cycle.
 """
 
 ################################################################################
@@ -84,7 +89,7 @@ SMTP_SERVER_ADDRESS  = {
                         'outlook': 'smtp-mail.outlook.com', 
                         'yahoo'  : 'smtp.mail.yahoo.com'
                        }
-VERSION              = '3.4.0'
+VERSION              = '3.4.1'
 
 ################################################################################
 #                                                                              #
@@ -612,10 +617,15 @@ def get_channels_dvr_version(dvr_url):
 
 def get_deleted_sources(sources):
     '''Return a list of source names that are present on the disk and not on the server.'''
-    sources_on_disk   = get_source_names_from_disk()
-    sources_on_server = [source.name for source in sources]
+    filenames_without_ext_on_disk = get_source_names_from_disk()
+    server_filename_map = {source.name.replace(' ', '_'): source.name for source in sources}
 
-    deleted_sources = [source_name for source_name in sources_on_disk if source_name not in sources_on_server]
+    deleted_sources = []
+    for filename_without_ext in filenames_without_ext_on_disk:
+        if filename_without_ext not in server_filename_map:
+            # Lossy fallback for display/file ops — create_local_file_name re-applies
+            # replace(' ', '_') so the correct file is still found and moved.
+            deleted_sources.append(filename_without_ext.replace('_', ' '))
 
     return deleted_sources
 
@@ -631,10 +641,8 @@ def get_modified_sources(sources):
 
 def get_new_sources(sources):
     '''Return a list of sources from the server that are not saved on the disk.'''
-    sources_on_disk   = get_source_names_from_disk()
-    sources_on_server = [source.name for source in sources]
-
-    new_sources = [source_name for source_name in sources_on_server if source_name not in sources_on_disk]
+    filenames_without_ext_on_disk = get_source_names_from_disk()
+    new_sources = [source.name for source in sources if source.name.replace(' ', '_') not in filenames_without_ext_on_disk]
 
     return new_sources
 
@@ -694,12 +702,15 @@ def get_source_url(dvr_url, source_name):
     return source_url
 
 def get_source_names_from_disk():
-    '''Retrieve the names of the sources that are saved on the disk.'''
+    '''
+    Retrieve the filenames (without extension) of sources saved on disk.
+    Underscores are NOT converted to spaces, avoiding a lossy round-trip when
+    source names contain underscores. Callers must compare against server source
+    names using source.name.replace(' ', '_').
+    '''
     all_log_files = [os.path.basename(log_file) for log_file in glob.glob(f'{Data_Subdirectory_Path}/*.log')]
     source_files = [f for f in all_log_files if ((f != LOG_FILE_ACTIVITY) and (LOG_FILE_CHANGES not in f))]
-    sources = [os.path.splitext(source_file)[0].replace('_', ' ') for source_file in source_files]
-
-    return sources
+    return [os.path.splitext(source_file)[0] for source_file in source_files]
 
 def notify_server_offline(dvr_url, sender_address, password, recipient_address, text_number):
     '''If email address and/or text number are/is provided, notify the user that the server is offline.'''
